@@ -12,16 +12,18 @@ Read `AGENTS.md`, `README.md`, and the files in `notes/` before acting. This pro
 - Pairing instructions in the APK use `SmartLife-XXXX` AP mode.
 - DoseControl's additional backend is `https://dcapi.lost-bytes.com/api`.
 - Upstream JADX `1.5.6` is already available in `tools/jadx/`, and output is in `decoded/jadx-2.08/`.
-- The official app's setting DP map and 32-byte alarm encoding are documented in `notes/apk-2.08-findings.md`.
-- See `notes/apk-2.08-findings.md` for endpoints and exact evidence.
+- The official app's setting DP map, exact 32-byte alarm encode/decode, full custom API action list, and Tuya account/pairing flow are documented in `notes/apk-2.08-findings.md`.
+- **Vendor security finding (2026-09-15):** the app authenticates into Tuya's cloud using hardcoded, shared/pooled Tuya account credentials (plaintext email+password embedded in the APK) rather than per-customer accounts — recoverable by anyone who decompiles the public APK. Actual credential values are kept out of the public repo in gitignored `notes/local-only-tuya-pool-credentials.md`. Do not use these credentials; see that file's "Recommended handling" section.
+- JADX-based static analysis of the app is essentially complete for now; the remaining unknowns (Tuya product ID, live DP schema, local LAN protocol) require a live pairing capture with the physical dispenser.
 
 ## Guardrails
 
-- Stay within the user's own device, account, phone, and network.
-- Never store or expose credentials, tokens, raw personal captures, or identifiers.
+- Stay within the user's own device, account, phone, and network — this now explicitly includes never logging into the shared Tuya pool accounts found in static analysis, since those accounts plausibly control other customers' devices too.
+- Never store or expose credentials, tokens, raw personal captures, or identifiers. Any live/sensitive credential discovered (vendor's or otherwise) goes only in a gitignored `notes/local-only-*` file, never in a file that gets committed.
 - Never test dispensing against medication. Explicit user approval and safe empty-device conditions are required before any dispense-related experiment.
-- Git is initialized and pushed to the public repo `SusieeTheLinuxUser/dosecontrol-re` on GitHub. Keep `apk/*.apk`, `decoded/`, `tools/`, and `captures/*` out of history (see `.gitignore`) — only hashes, sanitized excerpts, scripts, and notes get committed. Ask before force-pushing or rewriting history.
+- Git is initialized and pushed to the public repo `SusieeTheLinuxUser/dosecontrol-re` on GitHub. Keep `apk/*.apk`, `decoded/`, `tools/`, `captures/*`, and `notes/local-only-*` out of history (see `.gitignore`) — only hashes, sanitized excerpts, scripts, and notes get committed. Ask before force-pushing or rewriting history.
+- Update this file and `AGENTS.md` after any meaningful chunk of work (new findings, completed steps, changed plans) — the user switches between Claude, ChatGPT/Codex, Qwen, Kimi, and Z.ai, and these files are the only handoff mechanism between them.
 
 ## Best next move
 
-Inspect the existing JADX output for the remaining DoseControl API behavior, Tuya account/home flow, product ID handling, and data-point read/write calls. Write evidence-backed findings to `notes/`; label assumptions clearly.
+The static-analysis phase (custom API, Tuya account/home flow, DP read/write, alarm encoding) is done — see `notes/apk-2.08-findings.md`. Next real step needs the physical dispenser: pair it in a controlled network to observe its live Tuya product ID and DP schema, capturing one owner-controlled change at a time.

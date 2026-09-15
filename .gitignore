@@ -13,6 +13,10 @@ tools/
 captures/*
 !captures/.gitkeep
 
+# Local-only sensitive findings (live third-party credentials, etc.) —
+# never publish these, even redacted excerpts.
+notes/local-only-*
+
 # OS / editor noise
 .DS_Store
 *.swp

@@ -118,9 +118,43 @@ When saving an enabled alarm, the app writes byte `7` as `127` and byte `9` as `
 
 This is static source evidence only. Do not write these values to hardware until the owned dispenser has been characterized safely.
 
+The exact encoder, from `device/SchemaProcessor.java`, confirms the field layout precisely:
+
+```java
+public static String encodeAlarm(AlarmData alarmData) {
+    byte[] bArr = new byte[32];
+    bArr[0] = alarmData.enabled ? (byte) 1 : (byte) 0;
+    int[] alarmTimeAsArray = alarmData.getAlarmTimeAsArray();
+    bArr[5] = (byte) alarmTimeAsArray[0];   // hour
+    bArr[6] = (byte) alarmTimeAsArray[1];   // minute
+    bArr[7] = 127;                          // day-of-week bitmask, always "all days" on save
+    bArr[8] = 0;
+    bArr[9] = 0;                            // taken-status, reset to 0 on save
+    bArr[10] = 0;
+    return HexUtil.bytesToHexString(bArr);  // bytes 11-31 stay zero
+}
+```
+
+The decoder (`decodeAlarm`) reads the day-of-week mask from byte 7 as 8 individual bits (`AlarmData.Days.fromCode`), so devices can report a per-day mask even though the app itself always writes `127` (every day) on save.
+
+## Account and Tuya-linking flow (confirmed from source)
+
+- `BaseApplication.onCreate()` calls `ThingHomeSdk.init(this)` and `ThingHomeSdk.setDebugMode(false)` at process start — a single global Tuya SDK session for the whole app.
+- The app's own account system is a Strapi backend (`dcapi.lost-bytes.com`), modeled by `data/StrapiUser.java`. A `StrapiUser` record carries `tuya_uid`, `tuya_home_number`, `tuya_room_number`, and `tuya_user_number` fields returned by the DoseControl backend — i.e. Tuya identity is assigned server-side per DoseControl account, not chosen by the device owner.
+- **Important architecture finding:** the client does not use a per-customer Tuya account. `StrapiUser` embeds a hardcoded lookup table (keyed by `tuya_uid`) of shared Tuya cloud account credentials, and `HomeDashboardActivity`/`UserVerifyActivity` call `ThingHomeSdk.getUserInstance().loginWithEmail(...)` directly with those credentials to establish the Tuya SDK session. In other words, DoseControl pools many customers' devices into a small number of shared Tuya cloud accounts (distinguished internally via home/room/user numbers), rather than giving each customer an isolated Tuya account.
+- **This is a vendor-side security finding, not just an interop detail.** The pooled account credentials are plaintext strings embedded in the publicly distributed APK, recoverable by static decompilation (as done here). Anyone who decompiles the app gets working login credentials to cloud accounts that plausibly control other customers' dispensers, not just the extracting user's own device. The actual credential values are **not** included in this file — see the (gitignored, local-only) `notes/local-only-tuya-pool-credentials.md` for reference, and do not publish them anywhere. Recommend responsible disclosure to the vendor describing the architecture flaw without needing to publish live credentials.
+- Device pairing (`device/DeviceRegistrationNewActivity.java`) requests a Tuya activator token via `ThingHomeSdk.getActivatorInstance().getActivatorToken(homeId, ...)`, scoped to the current "home" (`HomeModel.getCurrentHome()`, a `SharedPreferences`-stored home ID local to the app), then starts AP-mode pairing with `ActivatorBuilder().setActivatorModel(ActivatorModelEnum.THING_AP)`.
+
+## Additional embedded constants (`Consts.java`)
+
+- A hardcoded JWT (`API_JWT`) used by `UserLoginActivity` for what appears to be a fallback/legacy login path. Decoded payload: `{"id":26,"iat":2022-10-05,"exp":2022-11-04}` — **expired since November 2022**, so not a live credential, but still a code-quality finding (a static token should never be embedded regardless of expiry).
+- `PAYMENT_KEY`: an RSA **public** key (not sensitive by construction — public keys are meant to be embedded for client-side encryption).
+- A live Stripe **publishable** key (`pk_live_...`) used to init the Stripe SDK — publishable keys are designed to be client-embedded and cannot move funds on their own; standard practice, not a leak.
+
 ## Immediate next steps
 
-1. Decompile with JADX and apktool to map the app classes that call the custom API and Tuya SDK.
-2. Identify the Tuya product identifier and DP schema after a dispenser is paired.
+1. ~~Decompile with JADX and apktool to map the app classes that call the custom API and Tuya SDK.~~ Done via JADX (see "Account and Tuya-linking flow" above); apktool not yet needed.
+2. Identify the Tuya product identifier and DP schema after a dispenser is paired. The client source doesn't embed a static product ID — it's assigned server-side per device, so this requires a live pairing capture.
 3. Capture only owner-controlled pairing and configuration actions, one change at a time.
 4. Treat dispensing as safety-critical: do not issue any experimental dispensing action against a loaded dispenser.
+5. Decide how to handle the pooled-Tuya-credential vendor vulnerability (see above) — at minimum avoid using it; consider responsible disclosure to the vendor.
