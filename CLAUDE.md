@@ -14,7 +14,9 @@ Read `AGENTS.md`, `README.md`, and the files in `notes/` before acting. This pro
 - Upstream JADX `1.5.6` is already available in `tools/jadx/`, and output is in `decoded/jadx-2.08/`.
 - The official app's setting DP map, exact 32-byte alarm encode/decode, full custom API action list, and Tuya account/pairing flow are documented in `notes/apk-2.08-findings.md`.
 - **Vendor security finding (2026-09-15):** the app authenticates into Tuya's cloud using hardcoded, shared/pooled Tuya account credentials (plaintext email+password embedded in the APK) rather than per-customer accounts — recoverable by anyone who decompiles the public APK. Actual credential values are kept out of the public repo in gitignored `notes/local-only-tuya-pool-credentials.md`. Do not use these credentials; see that file's "Recommended handling" section.
-- JADX-based static analysis of the app is essentially complete for now; the remaining unknowns (Tuya product ID, live DP schema, local LAN protocol) require a live pairing capture with the physical dispenser.
+- JADX-based static analysis of the app is essentially complete: full settings-write flow per DP, taken-status/day-code enums, and a confirmed negative finding (no app-side "dispense now" command exists anywhere — dispensing is driven by the device's own alarm schedule) are also in `notes/apk-2.08-findings.md`.
+- **Blocked on hardware as of 2026-09-15: the user does not have the physical dispenser yet.** Remaining unknowns (Tuya product ID, live DP schema, any local LAN protocol) all need a live pairing capture — don't keep re-reading app source for protocol findings, remaining unread files are UI/analytics/billing plumbing.
+- Manifest has no `networkSecurityConfig`; default Android 24+ behavior means a future capture session needs root (system CA install) or a Frida-based approach — a plain user-installed proxy CA won't be trusted. See "Network/traffic-capture planning notes" in `notes/apk-2.08-findings.md`.
 
 ## Guardrails
 
@@ -26,4 +28,4 @@ Read `AGENTS.md`, `README.md`, and the files in `notes/` before acting. This pro
 
 ## Best next move
 
-The static-analysis phase (custom API, Tuya account/home flow, DP read/write, alarm encoding) is done — see `notes/apk-2.08-findings.md`. Next real step needs the physical dispenser: pair it in a controlled network to observe its live Tuya product ID and DP schema, capturing one owner-controlled change at a time.
+Static analysis (custom API, Tuya account/home flow, every DP read/write, alarm encoding) is done — see `notes/apk-2.08-findings.md`. **The project is currently blocked on the user acquiring a physical dispenser.** The real next step needs it: pair it in a controlled network to observe its live Tuya product ID and DP schema, capturing one owner-controlled change at a time. Until then, the only useful work is optional (e.g. scaffolding a `src/` client against confirmed findings) — don't invent busywork or re-derive things already documented.

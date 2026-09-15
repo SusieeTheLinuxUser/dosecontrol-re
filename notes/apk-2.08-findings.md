@@ -135,7 +135,26 @@ public static String encodeAlarm(AlarmData alarmData) {
 }
 ```
 
-The decoder (`decodeAlarm`) reads the day-of-week mask from byte 7 as 8 individual bits (`AlarmData.Days.fromCode`), so devices can report a per-day mask even though the app itself always writes `127` (every day) on save.
+The decoder (`decodeAlarm`) reads the day-of-week mask from byte 7 as 8 individual bits (`AlarmData.Days.fromCode`), so devices can report a per-day mask even though the app itself always writes `127` (every day) on save. Day codes (`data/AlarmData.java`): Monday=0, Tuesday=1, Wednesday=2, Thursday=3, Friday=4, Saturday=5, Sunday=6. Taken-status values (byte 9): `0`=pending, `1`=missed, `2`=taken, `3`=taken late, `4`=taken early.
+
+## Confirmed device settings write flow (`device/DeviceSettingsActivity.java`, `device/DeviceDetailActivity.java`)
+
+Every setting is written the same way: build a small JSON object of `{"<dp>": value}` and call `pillboxDevice.publishDps(json, IResultCallback)` (the same Tuya `ThingHomeSdk.newDeviceInstance(devId)` object used for reads). No local/offline path — all of these first check `NetworkStateReceiver.getInstance().isConnected()` and refuse to proceed offline.
+
+| Setting | DP(s) written | Value shape |
+| --- | --- | --- |
+| 24h/12h time format | `113` | boolean |
+| Alarm volume | `122` | string of `0`-`3` |
+| Ring/voice type | `126` | string of `1`-`3` |
+| Alarm duration + warning duration | `123`, `124` | int, int |
+| Doses per day + total/remaining doses | `117`, `118` | int, int — **also** separately persisted server-side via `ApiWrapper.actionSaveDeviceSettings()` → `POST /dispenser/%dispid%/settings` `{"doses_per_day": N}` on the custom backend, i.e. this one setting is stored in two places |
+| "Refill" action (btnRefillDoses) | `118` only | sets remaining doses back to current total — this is a bookkeeping reset, not a hardware action |
+
+Reading current state uses `pillbox.getDps()` (the Tuya SDK's locally cached device state) fed into `new SchemaProcessor(dps)`, not a fresh network fetch each time — live updates arrive via `startDevListener()`/`stopDevListener()` (a Tuya device listener, presumably backed by the cloud MQTT session established at login, not a local LAN listener — no local LAN code path was found anywhere in the app-level source).
+
+Device removal: `ThingHomeSdk.newDeviceInstance(devId).removeDevice(IResultCallback)` — pure Tuya SDK call, no separate custom-backend unlink step observed at that call site (the `ACTION_REMOVE_DEVICE` API action exists separately, presumably called elsewhere to unlink from the DoseControl account).
+
+**Safety-relevant negative finding:** no "dispense now" / manual-dispense command exists anywhere in the client source. Every DP write found is a *setting* (time, volume, ringtone, alarm duration, dose count bookkeeping) or an *alarm schedule* write. Actual pill dispensing appears to be driven entirely by the alarm schedule running on the device's own firmware, not triggered remotely by the app. This is consistent with — but does not by itself prove — the assumption that experimenting with settings/alarm DPs on an unloaded/empty dispenser carries no dispensing risk; treat it as reinforcing evidence, not proof.
 
 ## Account and Tuya-linking flow (confirmed from source)
 
@@ -151,10 +170,17 @@ The decoder (`decodeAlarm`) reads the day-of-week mask from byte 7 as 8 individu
 - `PAYMENT_KEY`: an RSA **public** key (not sensitive by construction — public keys are meant to be embedded for client-side encryption).
 - A live Stripe **publishable** key (`pk_live_...`) used to init the Stripe SDK — publishable keys are designed to be client-embedded and cannot move funds on their own; standard practice, not a leak.
 
+## Network/traffic-capture planning notes
+
+- `AndroidManifest.xml` declares no `networkSecurityConfig` at all, `minSdkVersion="24"`, `targetSdkVersion="35"`. With no override, Android's default trust behavior for API 24+ applies: **user-installed CA certificates (e.g. a mitmproxy/Burp CA) are not trusted**, only system-preinstalled CAs. A future capture session will need either a rooted device (install the proxy CA into the system store) or a Frida/objection-based approach to add trust — plain "install cert as user CA" will not be enough on the real device.
+- No `CertificatePinner`/pinning-related strings were found, so the blocker is Android's default trust model, not app-level certificate pinning — the workaround above should be sufficient, no pin-bypass needed.
+- The bundled Tuya SDK (`com.thingclips.*`) contains concepts for local device data (`LocalDeviceBean`, `ThingLocalDeviceListDataBean`) but the implementing classes are heavily obfuscated (e.g. `sdk/home/bqdqdqd.java`) and no local UDP/TCP control ports or code paths were found via static search. Reverse-engineering that obfuscated code is likely low-value: Tuya's local LAN protocol is already documented by third-party projects (tinytuya, Home Assistant's localtuya integration). The blocking unknown for any local-only control path is always the same: a per-device `local_key`, obtainable only via the Tuya cloud API for a device you have legitimate access to.
+
 ## Immediate next steps
 
-1. ~~Decompile with JADX and apktool to map the app classes that call the custom API and Tuya SDK.~~ Done via JADX (see "Account and Tuya-linking flow" above); apktool not yet needed.
-2. Identify the Tuya product identifier and DP schema after a dispenser is paired. The client source doesn't embed a static product ID — it's assigned server-side per device, so this requires a live pairing capture.
-3. Capture only owner-controlled pairing and configuration actions, one change at a time.
-4. Treat dispensing as safety-critical: do not issue any experimental dispensing action against a loaded dispenser.
+1. ~~Decompile with JADX and apktool to map the app classes that call the custom API and Tuya SDK.~~ Done via JADX (see "Account and Tuya-linking flow" and "Confirmed device settings write flow" above); apktool not yet needed.
+2. **Blocked on hardware** (2026-09-15: dispenser not yet acquired). Identify the Tuya product identifier and DP schema after a dispenser is paired. The client source doesn't embed a static product ID — it's assigned server-side per device, so this requires a live pairing capture.
+3. Capture only owner-controlled pairing and configuration actions, one change at a time, once the dispenser is available. See "Network/traffic-capture planning notes" above for the cert-trust setup this will need.
+4. Treat dispensing as safety-critical: do not issue any experimental dispensing action against a loaded dispenser. (Static analysis found no app-side "dispense now" command at all — see the settings write flow section — but this doesn't remove the need for caution with real medication loaded.)
 5. Decide how to handle the pooled-Tuya-credential vendor vulnerability (see above) — at minimum avoid using it; consider responsible disclosure to the vendor.
+6. While waiting on hardware: static analysis of the client app is essentially exhausted at this point (remaining unread files are UI/analytics/billing plumbing, unlikely to add protocol-relevant findings). Productive next static work, if wanted, would be scaffolding a `src/` client (API wrapper + alarm encode/decode) against the confirmed findings, ready to point at a real device once paired.

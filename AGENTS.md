@@ -19,7 +19,9 @@ This is a personal-use interoperability research project for an owner-controlled
 - Upstream JADX `1.5.6` is installed project-locally in `tools/jadx/`; readable output is in `decoded/jadx-2.08/`.
 - The key configuration DPs, exact 32-byte alarm encode/decode, and Tuya account/pairing flow are documented in `notes/apk-2.08-findings.md`.
 - **Vendor vulnerability found:** the app logs into Tuya's cloud using hardcoded, shared/pooled Tuya account credentials (plaintext, embedded in the public APK) instead of per-customer accounts — meaning anyone who decompiles the app gets working access to cloud accounts that plausibly control other customers' dispensers too. Full detail + actual credential values are local-only in gitignored `notes/local-only-tuya-pool-credentials.md` — never publish or use them; see that file's "Recommended handling."
-- Static analysis of the client app (custom API surface, Tuya account/home flow, DP schema, alarm format) is essentially complete. Remaining unknowns (Tuya product ID, live DP schema, any local LAN protocol) need a live pairing capture with the physical dispenser.
+- Static analysis of the client app (custom API surface, Tuya account/home flow, every settings DP write flow, alarm format) is essentially complete. Confirmed negative finding: no app-side "dispense now" command exists anywhere — dispensing is driven entirely by the device's own alarm schedule.
+- **Blocked on hardware as of 2026-09-15: the user does not have the physical dispenser yet.** Remaining unknowns (Tuya product ID, live DP schema, any local LAN protocol) all need a live pairing capture. Don't keep re-reading app source hunting for protocol findings — remaining unread files are UI/analytics/billing plumbing, unlikely to add anything.
+- No `networkSecurityConfig` in the manifest; default Android 24+ (`targetSdkVersion=35`) behavior means a future capture session needs root (system CA install) or a Frida-based approach — a plain user-installed proxy CA won't be trusted by the app. Detail in `notes/apk-2.08-findings.md` "Network/traffic-capture planning notes".
 
 ## Safety and authorization
 
@@ -41,7 +43,8 @@ This is a personal-use interoperability research project for an owner-controlled
 ## Next technical steps
 
 1. ~~Inspect the existing JADX output for the remaining custom API behavior and Tuya account/home flow.~~ Done — see `notes/apk-2.08-findings.md`.
-2. Pair the owned dispenser in a controlled network and identify its Tuya product ID and live data-point schema.
-3. Capture owner-controlled pairing/configuration operations and compare one change at a time.
+2. **Blocked pending hardware.** Pair the owned dispenser in a controlled network and identify its Tuya product ID and live data-point schema, once acquired.
+3. Capture owner-controlled pairing/configuration operations and compare one change at a time (needs the dispenser — see "Network/traffic-capture planning notes" in `notes/apk-2.08-findings.md` for the cert-trust setup it will need).
 4. Design a minimal local prototype only after command semantics and failure modes are understood.
 5. Decide how to handle the pooled-Tuya-credential vendor vulnerability (avoid use; consider responsible disclosure to the vendor).
+6. Optional work that doesn't need the hardware: scaffold a `src/` client (API wrapper + alarm encode/decode) against the confirmed findings, ready to point at a real device once paired. Don't invent other busywork while blocked.
