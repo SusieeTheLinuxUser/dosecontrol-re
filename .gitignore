@@ -1,0 +1,18 @@
+# Extracted APKs — copyrighted binaries, do not redistribute.
+# Hashes and provenance live in notes/ instead.
+apk/*.apk
+
+# JADX decompiled output — large, derivative of third-party SDK code.
+decoded/
+
+# Downloaded tooling (e.g. JADX release) — fetch from upstream, see notes/.
+tools/
+
+# Traffic captures — may contain device/account identifiers even after
+# sanitizing; keep local only.
+captures/*
+!captures/.gitkeep
+
+# OS / editor noise
+.DS_Store
+*.swp
