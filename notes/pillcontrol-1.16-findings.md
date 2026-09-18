@@ -59,15 +59,57 @@ This is only bytes 9-12 of an unknown-length packet — header/CRC bytes before 
 
 The actual BLE packet construction (turning `setClock(...)`, `setVolume(...)` etc. into raw bytes written to a GATT characteristic) lives in a ProGuard-obfuscated package (single-letter classes `a.f`, `a.i`, `a.j`, `a.v`, `a.w`, `a.y`, `a.a0`). Not worth hand-deobfuscating byte-by-byte when a live BLE sniff will show the same thing far faster and with ground truth (see next steps).
 
-## Recommended next step: Bluetooth HCI snoop log (no root needed)
+## Live GATT exploration (2026-09-18, via nRF Connect for Mobile)
 
-Unlike the Tuya/WiFi device, this one needs **no MITM proxy, no root, no APK
-repatching**. Android has a built-in Bluetooth packet capture:
+**HCI snoop log is a dead end on this device's ColorOS build** — enabling the
+Developer options toggle produces no `btsnoop_hci.log` anywhere (checked a
+full `adb bugreport`, only OnePlus/Oppo's own text diagnostic log exists,
+which confirms connections/service-discovery but carries no raw ATT payload
+bytes). Don't retry that path on this phone.
 
-1. On the paired phone: Settings → System → Developer options → enable **"Bluetooth HCI snoop log"**.
-2. Use the PillControl app normally: connect, view alarms/settings, change one thing at a time (e.g. volume), each as its own capture window.
-3. Pull the log — either `adb bugreport bugreport.zip` (packages `FS/data/misc/bluetooth/logs/btsnoop_hci.log` inside, no root needed) or, on some OEMs, the log is directly readable from `/sdcard/`.
-4. Open the pulled `btsnoop_hci.log` in Wireshark (has a built-in Bluetooth ATT dissector) to read every GATT read/write/notify payload to/from the `0000FF00-...` service in the clear.
+Direct GATT browsing (nRF Connect for Mobile, connected — not bonded —
+directly to the device, official app force-stopped first so only one client
+holds the connection) confirmed the exact characteristic map under service
+`0000ff00-0000-1000-8000-00805f9b34fb` (handles `0x0017`-`0x0021`, matching
+the OEM log's service-discovery record):
+
+| Characteristic | Properties | Role |
+| --- | --- | --- |
+| `0xFF01` | Notify | responses/events for the FF02 write channel |
+| `0xFF02` | Write, Write No Response | primary command channel |
+| `0xFF21` | Notify | responses/events for the FF22 write channel |
+| `0xFF22` | Write, Write No Response | second command channel (possibly alarms vs. settings/battery — unconfirmed which is which) |
+
+Two independent write/notify pairs, not one multiplexed channel. This lines
+up with the source having two listener interfaces
+(`PillBoxParamsCallbackListener`: base params/battery/clock/drug records;
+`PillBoxNotifyCallbackListener`: clock/drug/ringtone/time-format/volume
+push notifications) — plausibly one pair per interface, but not yet confirmed
+which UUID pair maps to which.
+
+Also present: a **standard Bluetooth SIG Battery Service (`0x180F`)** —
+battery level is likely readable the standard way (characteristic `0x2A19`),
+no custom protocol needed for that one value.
+
+There's also a second custom service, UUID `00010203-0405-0607-0809-0a0b0c0d1912`
+(sequential-byte pattern, looks like an SDK template/example UUID) —
+purpose not yet investigated.
+
+### Next: correlate writes/notifies with real behavior
+
+With FF01/FF21 notifications enabled and the official app disconnected, the
+plan is to trigger known operations (e.g. `PillBoxControlManager.setPillBoxVoiceMaxAndMin`
+for volume, `setPillBoxTimeFormat`, `addAlarmClock`) — but since we can't
+observe the *official app's* raw bytes (no snoop), the practical approach is
+either (a) do one write at a time ourselves via nRF Connect and see what
+changes on the device/in the notify payload, informed by the known response
+byte layout (bytes 9=hour, 10=minute, 11=status/repeat flags, 12=effect_time,
+from `PillBoxControlManager.addAlarmClock`'s ack parsing), or (b) revisit a
+Frida/root-based capture later if manual probing stalls. Device is unloaded
+(still not out of retail plastic as of first pairing), so settings-level
+experiments are within the project's safety guardrails; avoid anything that
+looks like it could be a dispense-adjacent command until the protocol is
+better understood.
 
 ## Open questions
 
