@@ -121,21 +121,78 @@ spontaneous push. Likely needs an explicit write on its paired write
 channel (`FF22`) to trigger a response, unlike `FF01`/`FF02` which seem to
 auto-announce on connect.
 
-### Next: correlate writes/notifies with real behavior
+### Full wire protocol — decoded from the obfuscated `a.*` package (2026-09-18)
 
-With FF01/FF21 notifications enabled and the official app disconnected, the
-plan is to trigger known operations (e.g. `PillBoxControlManager.setPillBoxVoiceMaxAndMin`
-for volume, `setPillBoxTimeFormat`, `addAlarmClock`) — but since we can't
-observe the *official app's* raw bytes (no snoop), the practical approach is
-either (a) do one write at a time ourselves via nRF Connect and see what
-changes on the device/in the notify payload, informed by the known response
-byte layout (bytes 9=hour, 10=minute, 11=status/repeat flags, 12=effect_time,
-from `PillBoxControlManager.addAlarmClock`'s ack parsing), or (b) revisit a
-Frida/root-based capture later if manual probing stalls. Device is unloaded
-(still not out of retail plastic as of first pairing), so settings-level
-experiments are within the project's safety guardrails; avoid anything that
-looks like it could be a dispense-adjacent command until the protocol is
-better understood.
+The packet-encoding layer flagged as "obfuscated, not worth hand-reversing"
+earlier turned out to be small (27 tiny classes, ~230 lines total for the
+core ones) and trivial to read once you know what to grep for (the `0xBB`
+magic byte led straight to it). Full frame format, confirmed against the
+real captured packet:
+
+```
+byte 0      0xBB (-69)         magic/start byte, constant
+byte 1      0x11 (17)          constant (from a.a(byte[], boolean, byte))
+byte 2      len(body)+1        body = bytes[4..N-2] (i.e. response-type+status+opcode+payload, excludes header and checksum)
+byte 3      sequence number    rolling counter 0-255 for app-initiated requests (a.f4a, static, auto-increments); echoed back unchanged when acking a device-initiated packet
+byte 4      response-type      0 = request, 2 = ack/response (set explicitly when building an ack)
+byte 5      status             0 = success (checked via x.b(bArr) == 0)
+byte 6      opcode             dispatch key (see table below); acks reply with (0x80 | opcode)
+bytes 7..N-2  payload          opcode-specific, appears TLV-encoded (tag,len,value) in the one sample decoded so far
+byte N-1    checksum           sum(bytes[0..N-2]) mod 256 (a/b.java) — confirmed exact match against the real captured packet
+```
+
+Checksum verified by hand against the real `FF01` packet
+(`BB-11-10-0D-00-00-01-01-01-01-02-01-01-03-01-15-04-01-00-0F`): sum of
+bytes 0-18 = 271, `271 mod 256 = 0x0F` = the actual trailing byte. Confirmed.
+
+Known opcodes (from `a/k.java`'s dispatch, the notify-callback handler):
+
+| Opcode | Meaning | Ack sent back |
+| --- | --- | --- |
+| `1` | Device login/handshake request | `0x81` |
+| `3` | (unconfirmed, only acked if `x.b(bArr)==0`) | `0x83` |
+| `4` | "Device Notify" (logged distinctly) | `0x84` |
+| `-126` (0x82) | no-op / skips dispatch entirely | — |
+| `-123..-120`, `-118..-115` | logged only, no explicit handling shown | — |
+
+Special case: if byte 7 == `0xD1` and byte 5 == `0x10`, the app tears down
+the whole BLE connection (`BleManager.getInstance().destroy()`) — avoid
+accidentally constructing a packet matching that shape.
+
+Our one real captured packet is the device's **login request** (opcode
+`1`). Its payload (bytes 7-18, 12 bytes) cleanly parses as four 3-byte TLV
+triplets (`tag, len=1, value`): `(1,1)`, `(2,1)`, `(3,0x15=21)`, `(4,0)`.
+Tag 3's value of 21 is a strong candidate for **battery percentage**. This
+matches the TLV-builder helpers also found in `a/a.java`:
+`c(b)`→`{0x50,1,b}`, `a(b)`→`{0x51,1,b}`, `d(b)`→`{0x52,1,b}`,
+`b(b)`→`{0x53,1,b}` — tags 0x50-0x53, not 1-4, so these specific helpers
+aren't what built this particular login payload, but confirm the general
+TLV convention used elsewhere in the protocol.
+
+Computed ACK for the captured login packet (per `k.java`: copy the packet,
+set byte 4 = `2`, byte 6 = `0x81`, recompute the checksum):
+
+```
+BB-11-10-0D-02-00-81-01-01-01-02-01-01-03-01-15-04-01-00-91
+```
+
+**Not yet sent to the device** — this is a computed-from-source value,
+ready to test. Sending it via `FF02` is the next concrete experiment: if
+the protocol understanding is right, it should advance the connection's
+internal login state and likely provoke a follow-up packet (opcode `3` or
+`4`) on `FF01`.
+
+The alarm-clock-set command builder (`a/a.java`,
+`a(int i, int i2, int i3, boolean z, boolean z2, int[] iArr)`) is also now
+readable — 6-byte structure: `[0]=i+83` (slot-based opcode, so alarm slot 0
+maps to opcode `0x53`=83, matching the `b(byte)` TLV tag above — worth
+re-checking whether slot opcodes and the 0x50-0x53 TLV tags are the same
+namespace), `[1]=4` (fixed), `[2]=i2`, `[3]=i3`, `[4]`=flag byte (`z`→bit0,
+`z2`→bit1 via XOR), `[5]`=day-of-week bitmask (one bit per day, built from
+the `int[7]` array via `1 << index`).
+
+Second custom service (`00010203-...`) still not investigated — lower
+priority than finishing the FF00 login/settings/alarm flow.
 
 ## Open questions
 
