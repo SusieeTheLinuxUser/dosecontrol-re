@@ -97,8 +97,9 @@ purpose not yet investigated.
 
 ### Live capture (2026-09-18, direct adb+nRF Connect control)
 
-Confirmed device MAC: `[REDACTED-DEVICE-MAC]` (matches the `...56:74` fragment
-seen earlier in the OEM Bluetooth log). Connects fine unbonded.
+Confirmed device MAC (redacted here per the device-ID guardrail — kept
+locally, matches the `...56:74` fragment seen earlier in the OEM Bluetooth
+log). Connects fine unbonded.
 
 `FF01` notify value captured (present as soon as notifications were
 enabled, no explicit write needed — likely pushed automatically on
@@ -193,6 +194,40 @@ the `int[7]` array via `1 << index`).
 
 Second custom service (`00010203-...`) still not investigated — lower
 priority than finishing the FF00 login/settings/alarm flow.
+
+### Full login handshake — implemented and confirmed working standalone (2026-09-18)
+
+Built a from-scratch Python client (`bleak`, no phone/official app involved)
+that completes the entire login handshake against the real device and
+reaches the "logged in" state. This is a genuinely independent
+implementation, not a replay of captured app traffic.
+
+**Correction to the frame-format table above:** for *app-initiated* request
+packets (as opposed to device-initiated pushes like the login announce),
+byte 6 is **not** the opcode — it's a length byte for the sub-payload that
+follows. The real command tag lives at byte 7. The ack simply OR's `0x80`
+into byte 6 (so a request with byte6=2 acks as `0x82`, byte6=8 acks as
+`0x88`) and leaves byte 7 (the tag) and the rest of the payload as an echo.
+This only became clear by testing live — for device-initiated pushes
+(opcode `1`=login, `4`=notify) byte 6 genuinely is the dispatch opcode, per
+`a/k.java`.
+
+**Handshake sequence** (`a/f.java`, `a/p.java`, `a/o.java`, `a/q.java`, `a/g.java`):
+
+1. Device pushes login packet on `FF01` (opcode `1`). ACK it on `FF02` (byte4→2, byte6→`0x81`, recompute checksum) — see the ACK format documented above.
+2. Immediately send a "device key" request: payload `{0,0,2,0xD0,2,keyLow,keyHigh}`, framed normally. The key is derived from the **device's own BLE MAC address**: strip non-alphanumeric characters, uppercase, take the ASCII bytes, run **CRC16/MODBUS** (init `0xFFFF`, poly `0xA001` reflected) over them, format as a 4-hex-digit uppercase string, decode that back to 2 bytes, send as `[low, high]`. **Confirmed working** — device replies with status `0` (success) on the first real try.
+   - This is a weak "authentication" scheme worth flagging as a vendor finding: the device's own MAC is broadcast in cleartext in every BLE advertisement, so anyone in range can compute this "key" trivially. It's obscurity, not security.
+3. Immediately send a "phone key" request: same shape, tag `0xD1`, key derived the same way but from the **controlling phone's own network MAC** (the app tries `wlan0`, falls back to `eth0`, then `NetworkInterface` enumeration, then `02:00:00:00:00:00`). Tested with an arbitrary (wrong) MAC — got status `16` (rejected, presumably not the phone this dispenser was originally paired with). **This doesn't matter** — see next point.
+4. Per `a/q.java`, the app does **not** gate on D1's real device-side result — it proceeds regardless, based only on the local BLE write completing (a FastBLE callback quirk: `DeviceWriteCallBack.onResponseSuccess` fires with the just-written bytes echoed back, not a genuine device response; real device responses are routed separately through the notify dispatcher in `k.java`). It immediately sends a **date/time sync**: payload `{0,0,8,0xE0,8,yearHi,yearLo,month,day,hour,minute,second,weekdayFrom0}`. **Confirmed working** — device echoed the sent date/time back with the ack pattern (`0x88`), matching the current date exactly.
+5. Per `a/g.java`, once the date-sync write locally completes, the app sets its internal connection state to `j=2` — **this is "logged in."** It then fires three more capability-list queries (`{0,0,10}`, `{0,0,11}`, `{0,0,12}`, chained through `a/u.java`→`a/t.java`→`a/s.java`) to populate supported-feature arrays used later — not yet tested live, lower priority than confirming basic alarm/settings read-write now that login works.
+
+**Bonus decode:** the original login packet's payload encodes more than the earlier TLV guess suggested. Per `a/q.java`, byte 15 is the **firmware version** as two nibbles (`(b&0xF0)>>4` + "." + `(b&0x0F)`) — our captured packet's byte 15 was `0x15`, decoding to firmware **"1.5"**. Byte 18 is a **reset flag** (our sample: `0`). The earlier "TLV tags 1-4" reading of bytes 7-18 should be treated as unconfirmed/superseded by this more specific field mapping — worth re-deriving properly rather than trusting the generic TLV guess.
+
+**Also observed:** a recurring unsolicited push on `FF01` every ~4-5 seconds, opcode `4` (`bb110714000004110100fd` pattern, payload tag `0x11`=17, value `0`) — likely a periodic heartbeat/status beacon. Per `a/k.java` this should be ACKed with opcode `0x84`; not yet implemented in the test client, so it just keeps repeating harmlessly.
+
+**Implementation:** `src/pillcontrol_ble.py` (needs `pip install -r src/requirements.txt`) — a clean, from-scratch client implementing the above. Validated twice live against the real device: completes login in ~1.4s (`python3 src/pillcontrol_ble.py --connect <device MAC>` — kept local, not written here, see the device-ID guardrail), and has an offline self-check (`python3 src/pillcontrol_ble.py`, no hardware needed) covering the CRC16 key derivation (against a synthetic MAC, not the real device's), frame format, and ack detection against real captured bytes. Also handles the opcode-4 heartbeat (acks it so the connection doesn't get dropped/retried by the device).
+
+**Next steps:** attempt an actual alarm/settings **read** (safe, non-mutating) using the now-authenticated session — that's the next real unknown (exact request shape for "list alarms" / "get params", not yet captured). The `{0,0,10}`/`{0,0,11}`/`{0,0,12}` capability-list queries from `a/g.java`'s chain (through `u.java`→`t.java`→`s.java`) are worth trying first since they're the app's own next step after login.
 
 ## Open questions
 

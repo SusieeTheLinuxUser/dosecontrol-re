@@ -13,6 +13,18 @@ that's now the active line of work. Everything under "State as of
 user doesn't have. Don't delete it (may be useful later / for others), but
 don't treat it as this device's protocol.
 
+## MAJOR MILESTONE (2026-09-18) — working standalone client, logged in
+
+Reverse-engineered the full BLE wire protocol from `pillcontrol`'s
+obfuscated packet layer (frame format, checksum, login handshake, CRC16-MAC
+key derivation) and **built and validated a standalone Python client
+(`src/pillcontrol_ble.py`) that logs into the real device with no phone or
+official app involved.** Confirmed working live twice. Full protocol
+writeup in `notes/pillcontrol-1.16-findings.md` under "Full login handshake
+— implemented and confirmed working standalone." This is the current
+frontier — next unknown is the exact request shape for reading
+alarms/settings (post-login, not yet captured).
+
 ## State as of 2026-09-15
 
 - Android app extracted from the owner-controlled device:
@@ -39,4 +51,4 @@ don't treat it as this device's protocol.
 
 ## Best next move
 
-**Device acquired 2026-09-18 — it's the Bluetooth `pillcontrol` device, not the Tuya one.** Static analysis of `pillcontrol` 1.16 is done (BLE service UUID, data model, obfuscation boundary) — see `notes/pillcontrol-1.16-findings.md`. The concrete next step: capture a Bluetooth HCI snoop log while using the real app (no root/MITM needed, see that file's "Recommended next step"), then analyze the pulled `btsnoop_hci.log` in Wireshark to get exact GATT characteristic UUIDs and full packet formats. `src/dosecontrol.py` (Tuya-flavored scaffold) is stale for this device — don't extend it until the BLE protocol is confirmed; a new `src/` module will be needed once the GATT format is known.
+`src/pillcontrol_ble.py` logs into the real device standalone (confirmed working). Next: extend it to read alarms/settings post-login — try the `{0,0,10}`/`{0,0,11}`/`{0,0,12}` capability-list queries first (that's what the official app does right after login, per `a/g.java`'s chain), then work out the actual alarm-list/params-read request shape. Keep experiments read-only until the request/response shapes for settings *writes* are independently understood — device is still unloaded (safe), but no need to guess at writes when reads haven't been mapped yet. `src/dosecontrol.py` (Tuya-flavored scaffold) remains stale/irrelevant to this device — don't extend it.

@@ -15,7 +15,8 @@ This is a personal-use interoperability research project for an owner-controlled
 
 ## Current verified facts
 
-- **Actual device (`pillcontrol`, confirmed 2026-09-18):** Bluetooth-only, no cloud dependency for control. App `lb.android.pillcontrol` v1.16, BLE service UUID `0000FF00-0000-1000-8000-00805F9B34FB`, device advertises with `"LN"` in its BLE name. Uses FastBLE (`com.clj.fastble`) + a vendor protocol lib (`com.xm.xjh.blelibrary`) whose app-facing classes are readable but whose packet-encoding layer is ProGuard-obfuscated. Data model (alarms/settings/battery/records) documented in `notes/pillcontrol-1.16-findings.md`. Next step is a Bluetooth HCI snoop log capture (no root needed) — see that file.
+- **Actual device (`pillcontrol`, confirmed 2026-09-18):** Bluetooth-only, no cloud dependency for control. App `lb.android.pillcontrol` v1.16, BLE service UUID `0000FF00-0000-1000-8000-00805F9B34FB`, device advertises with `"LN"` in its BLE name. Uses FastBLE (`com.clj.fastble`) + a vendor protocol lib (`com.xm.xjh.blelibrary`) whose app-facing classes are readable but whose packet-encoding layer is ProGuard-obfuscated (fully reversed anyway, see below). Data model (alarms/settings/battery/records) documented in `notes/pillcontrol-1.16-findings.md`.
+- **MILESTONE (2026-09-18): `src/pillcontrol_ble.py` is a working standalone client that logs into the real device.** Full wire protocol reversed (frame format, checksum, login handshake incl. CRC16/MODBUS MAC-derived auth keys) and validated live twice — no phone or official app needed. See notes for full writeup. Frontier is now post-login reads (alarms/settings), not the handshake.
 - Everything below this point is about the *other*, unowned Tuya device (`lb.android.dosecontrol`) — kept for reference, not active work.
 - Official Android package: `lb.android.dosecontrol`, version `2.08` / code `87`.
 - Its APK has been pulled from the owner's Play Store installation into `apk/`.
@@ -48,10 +49,10 @@ This is a personal-use interoperability research project for an owner-controlled
 ## Next technical steps (active device: `pillcontrol`, Bluetooth)
 
 1. ~~Decompile and statically analyze `pillcontrol` 1.16.~~ Done — see `notes/pillcontrol-1.16-findings.md`.
-2. Capture a Bluetooth HCI snoop log while using the real app (Developer options toggle, no root) to get exact GATT characteristic UUIDs and full packet formats — the obfuscated packet-encoding layer isn't worth hand-reversing when a live capture gives ground truth directly.
-3. Once the GATT format is known: write a new BLE client (a fresh module — `src/dosecontrol.py` is Tuya-flavored and stale for this device), one capability at a time (read alarms/settings first, writes only after read is solid).
-4. Change one thing at a time during any live capture (e.g. one alarm by one minute), labeling each capture with the action taken.
-5. Design a minimal local prototype only after command semantics and failure modes are understood from real captures.
+2. ~~Reverse the wire protocol and build a working login client.~~ Done — `src/pillcontrol_ble.py`, validated live. HCI snoop logging turned out to be a dead end on this phone's ColorOS build; static analysis of the obfuscated packet layer plus live testing got us further and faster.
+3. Extend `src/pillcontrol_ble.py` to read alarms/settings post-login (try the `{0,0,10}`/`{0,0,11}`/`{0,0,12}` capability queries the official app sends next, per `a/g.java`'s chain). Reads first, writes only once reads are solid and the request shape is independently understood (not guessed).
+4. Change one thing at a time during any live experiment (e.g. one alarm by one minute), noting the action taken and the exact bytes sent/received.
+5. Design a minimal local prototype (beyond the login client) only after read/write command semantics and failure modes are understood from real device interaction, not just source reading.
 
 ## Parked (unowned Tuya device — `dosecontrol`, not this project's active hardware)
 
