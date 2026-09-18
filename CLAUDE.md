@@ -1,6 +1,17 @@
 # Medicine Doser — continuation brief
 
-Read `AGENTS.md`, `README.md`, and the files in `notes/` before acting. This project is early-stage personal-use research for an owner-controlled DoseControl WiFi pill dispenser; it is not yet a working controller.
+Read `AGENTS.md`, `README.md`, and the files in `notes/` before acting. This project is early-stage personal-use research for an owner-controlled pill dispenser; it is not yet a working controller.
+
+## CORRECTION (2026-09-18) — read this first
+
+The user's actual physical device is **Bluetooth-based**, pairing with app
+`lb.android.pillcontrol`, NOT the Tuya/WiFi `lb.android.dosecontrol` app
+analyzed below. The vendor makes two device lines. See
+`notes/pillcontrol-1.16-findings.md` for the correct device's findings —
+that's now the active line of work. Everything under "State as of
+2026-09-15" below is still valid research, just for a different product the
+user doesn't have. Don't delete it (may be useful later / for others), but
+don't treat it as this device's protocol.
 
 ## State as of 2026-09-15
 
@@ -28,4 +39,4 @@ Read `AGENTS.md`, `README.md`, and the files in `notes/` before acting. This pro
 
 ## Best next move
 
-Static analysis (custom API, Tuya account/home flow, every DP read/write, alarm encoding) is done — see `notes/apk-2.08-findings.md`. **The project is currently blocked on the user acquiring a physical dispenser.** The real next step needs it: pair it in a controlled network to observe its live Tuya product ID and DP schema, capturing one owner-controlled change at a time. Until then, the only useful work is optional (e.g. scaffolding a `src/` client against confirmed findings) — don't invent busywork or re-derive things already documented.
+**Device acquired 2026-09-18 — it's the Bluetooth `pillcontrol` device, not the Tuya one.** Static analysis of `pillcontrol` 1.16 is done (BLE service UUID, data model, obfuscation boundary) — see `notes/pillcontrol-1.16-findings.md`. The concrete next step: capture a Bluetooth HCI snoop log while using the real app (no root/MITM needed, see that file's "Recommended next step"), then analyze the pulled `btsnoop_hci.log` in Wireshark to get exact GATT characteristic UUIDs and full packet formats. `src/dosecontrol.py` (Tuya-flavored scaffold) is stale for this device — don't extend it until the BLE protocol is confirmed; a new `src/` module will be needed once the GATT format is known.

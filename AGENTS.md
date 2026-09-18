@@ -2,16 +2,21 @@
 
 ## Purpose
 
-This is a personal-use interoperability research project for an owner-controlled **DoseControl WiFi** pill dispenser (target: `MC21-WF-MT`). The long-term aim is a local-first controller, but this repository is currently in reconnaissance.
+This is a personal-use interoperability research project for an owner-controlled pill dispenser. The long-term aim is a local-first controller, but this repository is currently in reconnaissance.
+
+**Correction (2026-09-18):** the user's actual physical device is Bluetooth-based (`lb.android.pillcontrol` app), not the Tuya/WiFi `MC21-WF-MT`/`lb.android.dosecontrol` device analyzed first — the vendor makes two device lines and the wrong one was initially assumed. `notes/apk-2.08-findings.md` is still-valid research for that other (unowned) product; `notes/pillcontrol-1.16-findings.md` is the active line of work.
 
 ## Read first
 
 1. `README.md`
 2. `notes/initial-recon.md`
-3. `notes/apk-2.08-findings.md`
+3. `notes/pillcontrol-1.16-findings.md` — **the actual device**
+4. `notes/apk-2.08-findings.md` — a different, unowned Tuya-based device; kept for reference only
 
 ## Current verified facts
 
+- **Actual device (`pillcontrol`, confirmed 2026-09-18):** Bluetooth-only, no cloud dependency for control. App `lb.android.pillcontrol` v1.16, BLE service UUID `0000FF00-0000-1000-8000-00805F9B34FB`, device advertises with `"LN"` in its BLE name. Uses FastBLE (`com.clj.fastble`) + a vendor protocol lib (`com.xm.xjh.blelibrary`) whose app-facing classes are readable but whose packet-encoding layer is ProGuard-obfuscated. Data model (alarms/settings/battery/records) documented in `notes/pillcontrol-1.16-findings.md`. Next step is a Bluetooth HCI snoop log capture (no root needed) — see that file.
+- Everything below this point is about the *other*, unowned Tuya device (`lb.android.dosecontrol`) — kept for reference, not active work.
 - Official Android package: `lb.android.dosecontrol`, version `2.08` / code `87`.
 - Its APK has been pulled from the owner's Play Store installation into `apk/`.
 - The app bundles the Tuya/ThingClips SDK and supports `SmartLife-XXXX` AP-mode Wi-Fi provisioning.
@@ -40,11 +45,15 @@ This is a personal-use interoperability research project for an owner-controlled
 - Mark conclusions as **confirmed**, **likely**, or **unknown**. Do not present SDK string evidence as proof of a local protocol.
 - Update `notes/`, and **this file and `CLAUDE.md` themselves**, whenever a meaningful discovery, completed step, or plan change happens — the user hops between Claude, ChatGPT/Codex, Qwen, Kimi, and Z.ai across sessions, and these two files are the only continuity mechanism between them.
 
-## Next technical steps
+## Next technical steps (active device: `pillcontrol`, Bluetooth)
 
-1. ~~Inspect the existing JADX output for the remaining custom API behavior and Tuya account/home flow.~~ Done — see `notes/apk-2.08-findings.md`.
-2. **Blocked pending hardware.** Pair the owned dispenser in a controlled network and identify its Tuya product ID and live data-point schema, once acquired.
-3. Capture owner-controlled pairing/configuration operations and compare one change at a time (needs the dispenser — see "Network/traffic-capture planning notes" in `notes/apk-2.08-findings.md` for the cert-trust setup it will need).
-4. Design a minimal local prototype only after command semantics and failure modes are understood.
-5. Decide how to handle the pooled-Tuya-credential vendor vulnerability (avoid use; consider responsible disclosure to the vendor).
-6. Optional work that doesn't need the hardware: scaffold a `src/` client (API wrapper + alarm encode/decode) against the confirmed findings, ready to point at a real device once paired. Don't invent other busywork while blocked.
+1. ~~Decompile and statically analyze `pillcontrol` 1.16.~~ Done — see `notes/pillcontrol-1.16-findings.md`.
+2. Capture a Bluetooth HCI snoop log while using the real app (Developer options toggle, no root) to get exact GATT characteristic UUIDs and full packet formats — the obfuscated packet-encoding layer isn't worth hand-reversing when a live capture gives ground truth directly.
+3. Once the GATT format is known: write a new BLE client (a fresh module — `src/dosecontrol.py` is Tuya-flavored and stale for this device), one capability at a time (read alarms/settings first, writes only after read is solid).
+4. Change one thing at a time during any live capture (e.g. one alarm by one minute), labeling each capture with the action taken.
+5. Design a minimal local prototype only after command semantics and failure modes are understood from real captures.
+
+## Parked (unowned Tuya device — `dosecontrol`, not this project's active hardware)
+
+1. Decide how to handle the pooled-Tuya-credential vendor vulnerability found during that research (avoid use; consider responsible disclosure to the vendor) — still worth doing regardless of which device is active, since it's a live vendor security issue.
+2. Everything else about the Tuya device (product ID, DP capture, cert-trust setup) stays parked unless the user acquires that device too.
