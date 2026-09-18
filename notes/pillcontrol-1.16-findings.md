@@ -95,6 +95,32 @@ There's also a second custom service, UUID `00010203-0405-0607-0809-0a0b0c0d1912
 (sequential-byte pattern, looks like an SDK template/example UUID) —
 purpose not yet investigated.
 
+### Live capture (2026-09-18, direct adb+nRF Connect control)
+
+Confirmed device MAC: `[REDACTED-DEVICE-MAC]` (matches the `...56:74` fragment
+seen earlier in the OEM Bluetooth log). Connects fine unbonded.
+
+`FF01` notify value captured (present as soon as notifications were
+enabled, no explicit write needed — likely pushed automatically on
+connect/subscribe as part of the base-params handshake):
+
+```
+BB-11-10-0D-00-00-01-01-01-01-02-01-01-03-01-15-04-01-00-0F
+```
+
+20 bytes total. Working structure hypothesis (unconfirmed, needs more
+samples to verify): `BB` = start/magic byte, `11` = message type/opcode,
+`10` = sub-type or count, `0D` (=13) = payload length — and 13 bytes
+follow exactly (indices 4-16), leaving a plausible 3-byte
+trailer/checksum (`01-00-0F`). Payload bytes not yet mapped to specific
+`ParamBean` fields (time_format, alarm_voice, alarm_ring, etc.) — need a
+second sample with a known, deliberately-changed setting to diff against.
+
+`FF21` (the second notify channel) stayed empty after subscribing — no
+spontaneous push. Likely needs an explicit write on its paired write
+channel (`FF22`) to trigger a response, unlike `FF01`/`FF02` which seem to
+auto-announce on connect.
+
 ### Next: correlate writes/notifies with real behavior
 
 With FF01/FF21 notifications enabled and the official app disconnected, the
