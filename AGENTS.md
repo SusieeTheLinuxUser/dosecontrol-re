@@ -16,7 +16,8 @@ This is a personal-use interoperability research project for an owner-controlled
 ## Current verified facts
 
 - **Actual device (`pillcontrol`, confirmed 2026-09-18):** Bluetooth-only, no cloud dependency for control. App `lb.android.pillcontrol` v1.16, BLE service UUID `0000FF00-0000-1000-8000-00805F9B34FB`, device advertises with `"LN"` in its BLE name. Uses FastBLE (`com.clj.fastble`) + a vendor protocol lib (`com.xm.xjh.blelibrary`) whose app-facing classes are readable but whose packet-encoding layer is ProGuard-obfuscated (fully reversed anyway, see below). Data model (alarms/settings/battery/records) documented in `notes/pillcontrol-1.16-findings.md`.
-- **MILESTONE (2026-09-18): `src/pillcontrol_ble.py` is a working standalone client that logs into the real device.** Full wire protocol reversed (frame format, checksum, login handshake incl. CRC16/MODBUS MAC-derived auth keys) and validated live twice — no phone or official app needed. See notes for full writeup. Frontier is now post-login reads (alarms/settings), not the handshake.
+- **MILESTONE (2026-09-19): `src/pillcontrol_ble.py` fully reverse-engineers AND live-confirms the whole read protocol.** Login (CRC16/MODBUS MAC-derived auth keys) + full read chain (settings, all 8 alarm slots, battery) — no phone or official app needed, reproduced clean across 2 live runs. Real data: `settings={'time_format':0,'alarm_ring':1,'alarm_voice':2,'alarm_duration':30}`, all alarms empty (`24:60` sentinel), `battery={'percent':1,'state':0}` (battery field meaning still unconfirmed). See notes "LIVE CONFIRMED" section for full writeup. Frontier is now **writes** — no settings/alarm write has been tested live yet, only login/date-sync writes are confirmed.
+- **Hardware quirk:** the device needs external power to keep its BLE radio advertising — button presses alone don't wake it. Plug it in before troubleshooting a "device not found" scan.
 - Everything below this point is about the *other*, unowned Tuya device (`lb.android.dosecontrol`) — kept for reference, not active work.
 - Official Android package: `lb.android.dosecontrol`, version `2.08` / code `87`.
 - Its APK has been pulled from the owner's Play Store installation into `apk/`.
@@ -50,9 +51,10 @@ This is a personal-use interoperability research project for an owner-controlled
 
 1. ~~Decompile and statically analyze `pillcontrol` 1.16.~~ Done — see `notes/pillcontrol-1.16-findings.md`.
 2. ~~Reverse the wire protocol and build a working login client.~~ Done — `src/pillcontrol_ble.py`, validated live. HCI snoop logging turned out to be a dead end on this phone's ColorOS build; static analysis of the obfuscated packet layer plus live testing got us further and faster.
-3. Extend `src/pillcontrol_ble.py` to read alarms/settings post-login (try the `{0,0,10}`/`{0,0,11}`/`{0,0,12}` capability queries the official app sends next, per `a/g.java`'s chain). Reads first, writes only once reads are solid and the request shape is independently understood (not guessed).
-4. Change one thing at a time during any live experiment (e.g. one alarm by one minute), noting the action taken and the exact bytes sent/received.
-5. Design a minimal local prototype (beyond the login client) only after read/write command semantics and failure modes are understood from real device interaction, not just source reading.
+3. ~~Extend `src/pillcontrol_ble.py` to read alarms/settings post-login.~~ Done and live-confirmed (2 clean runs) — settings, all 8 alarm slots, battery. See `notes/pillcontrol-1.16-findings.md` "LIVE CONFIRMED" section for the real data and a corrected understanding of the "empty slot" sentinel (`24:60`, not `0xFF`).
+4. **Next: a settings write, live.** Categories `6` (settings SET) and `8` (events) are mapped from source but never tried against real hardware. Start with something low-stakes and easy to verify by reading back afterward — e.g. toggle time format (tag `0x50`). Change one thing at a time, note exact bytes sent/received. Device needs external power to keep its radio on — plug it in first.
+5. Figure out what battery `percent`/`state` actually mean — `percent=1` read live is suspiciously low for a literal 0-100 value, more likely a coarse level code.
+6. Design a minimal local prototype (beyond the login/read client) only after write command semantics and failure modes are understood from real device interaction, not just source reading. Still nothing alarm-schedule- or dispense-adjacent until writes are proven safe and reversible on simple settings first.
 
 ## Parked (unowned Tuya device — `dosecontrol`, not this project's active hardware)
 

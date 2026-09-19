@@ -227,11 +227,144 @@ This only became clear by testing live — for device-initiated pushes
 
 **Implementation:** `src/pillcontrol_ble.py` (needs `pip install -r src/requirements.txt`) — a clean, from-scratch client implementing the above. Validated twice live against the real device: completes login in ~1.4s (`python3 src/pillcontrol_ble.py --connect <device MAC>` — kept local, not written here, see the device-ID guardrail), and has an offline self-check (`python3 src/pillcontrol_ble.py`, no hardware needed) covering the CRC16 key derivation (against a synthetic MAC, not the real device's), frame format, and ack detection against real captured bytes. Also handles the opcode-4 heartbeat (acks it so the connection doesn't get dropped/retried by the device).
 
-**Next steps:** attempt an actual alarm/settings **read** (safe, non-mutating) using the now-authenticated session — that's the next real unknown (exact request shape for "list alarms" / "get params", not yet captured). The `{0,0,10}`/`{0,0,11}`/`{0,0,12}` capability-list queries from `a/g.java`'s chain (through `u.java`→`t.java`→`s.java`) are worth trying first since they're the app's own next step after login.
+### Complete command set — the "category" byte (2026-09-18)
+
+Byte 6 of an app-initiated request (i.e. `body[2]`, where body is
+`[0, 0, category, ...]`) is a **category/handler selector**, not a length.
+The device routes on it, then dispatches again on the sub-tag at byte 7.
+Confirmed categories:
+
+| Category | Meaning | Source |
+| --- | --- | --- |
+| `2` | Auth key exchange (sub-tags `0xD0` device key, `0xD1` phone key) | `a/p.java`, `a/o.java` |
+| `5` | Batched **GET** — settings and alarm reads | `a/a.java` `a(byte[])`, `a/r.java`, `a/f.java` |
+| `6` | Single settings **SET** | `Device.setConfig()` |
+| `7` | Battery GET (sub-tags `0x10`, `0x11`) | `a/f.java` `c()` |
+| `8` | Events: `0xE0` date/time sync, `0xE2` mute, `0xD3` unbind | `a/q.java`, `Device.mute()`, `Device.unbind()` |
+| `10`-`13` | Capability queries (bare — no sub-payload at all) | `a/g.java`→`u`→`t`→`s`→`r` |
+
+**Read vs. write is disambiguated purely by category**, not by packet shape:
+a GET and a SET carry the *identical* `[tag, len, value]` sub-block — the
+GET just sends a dummy value (usually `0`) under category `5`, while the
+SET sends the real value under category `6`.
+
+**Settings tags** (1-byte values, used for both GET and SET):
+
+| Tag | Setting | `ParamBean` field |
+| --- | --- | --- |
+| `0x50` | Time format (12h/24h) | `time_format` |
+| `0x51` | Beep/ring kind | `alarm_ring` |
+| `0x52` | Volume | `alarm_voice` |
+| `0x53` | Alarm/remind duration | `alarm_clock_duration` |
+
+**Alarm slot blocks** are 6 bytes: `[slot+83, 4, hour, minute, flags, daymask]`
+(so slot 1 → tag `0x54`, slot 8 → `0x5B`; tags `0x50`-`0x53` are reserved
+for the settings above, which is why slots start at 1 rather than 0).
+`flags` bit0 = enabled, bit1 = repeat. `daymask` bits 0-6 = Sunday..Saturday
+(`a/y.java` decodes it to a comma-separated day-code string).
+
+### The full post-login read sequence
+
+Traced end to end through `a/g.java` → `u.java` → `t.java` → `s.java` →
+`r.java` → `d.java` → `e.java` → `f.c()`:
+
+1. Four bare capability queries: `{0,0,10}`, `{0,0,11}`, `{0,0,12}`, `{0,0,13}`. The responses populate `f.e`/`f.f` — byte arrays listing **which tags the device supports**. `r.java` then checks membership for tags `80`-`83` to decide which settings to ask for.
+2. **Settings GET** (category `5`), one batched request containing all supported settings tags with dummy zero values: `{0,0,5, 0x50,1,0, 0x51,1,0, 0x52,1,0, 0x53,1,0}`. Response parsed in `a/d.java` at fixed absolute packet offsets: **byte 9 = time_format, 12 = alarm_ring, 15 = alarm_voice, 18 = alarm_clock_duration** (3-byte stride = one `[tag,len,value]` triplet each).
+3. **Alarm GET**, walked two slots at a time (category `5`, two alarm blocks per request, dummy values). Response parsed in `a/e.java`: slot *i* at **bytes 9,10,11,12** (hour, minute, flags, daymask) and slot *i+1* at **bytes 15,16,17,18**. `hour == 0xFF` means the slot is empty (status 0); otherwise flags bit0 gives active (1) vs disabled (2). The chain walks pairs 1→3→5→7→9 (the last one overruns the real 8 slots and returns garbage for slot 10 — the official app does this too, so it's replicated rather than "fixed"; the client discards rows > 8).
+4. **Battery GET** (category `7`, tags `0x10`/`0x11`). Response parsed by the inner class `a` in `a/f.java`: **byte 8 = percent, byte 9 = state**.
+
+This means every read the official app performs is now fully mapped, and
+all the write commands are mapped too (categories 6 and 8 above) — though
+no write beyond the login/date-sync has been attempted.
+
+### LIVE CONFIRMED (2026-09-19) — full read chain works end to end
+
+`src/pillcontrol_ble.py` ran the entire chain (login → capability queries →
+settings → all 8 alarm slots → battery) against the real device twice in a
+row, both clean exits, both runs producing identical data:
+
+```
+settings: {'time_format': 0, 'alarm_ring': 1, 'alarm_voice': 2, 'alarm_duration': 30}
+alarms: all 8 slots — status=2, hour=24, minute=60, repeat=False, days=[]
+battery: {'percent': 1, 'state': 0}
+```
+
+**Correction to the design above:** the "empty slot" sentinel is **not**
+`hour == 0xFF`. A genuinely never-configured slot on the real device reads
+back `hour=24, minute=60, flags=0` — i.e. the literal `"24:60"` string
+`Pillbox.removeAlarm()` writes when clearing a slot (`24` is out-of-range
+for a real hour, hence the sentinel). With `flags=0` that decodes to
+`status=2` ("disabled") under the source's own logic, not `status=0`
+("empty") — the `hour==0xFF` case may be a separate, rarer sentinel never
+actually produced by this firmware, or only reachable another way. Since
+all 8 slots came back this same way on a factory-fresh, never-configured
+unit, this is a confident read, not a guess.
+
+**Battery is unconfirmed in meaning**, not in mechanism: `percent=1` is
+suspiciously low for a literal 0-100 percentage on a device that (per the
+finding below) needs external power just to keep its radio on — plausibly
+it's a coarse level code (e.g. 0-3, like the volume field) rather than a
+true percentage, or the battery genuinely is that depleted. Cross-check
+against the official app's own battery UI next time it's convenient.
+
+A bug was found and fixed en route: `is_ack_for()` originally checked only
+the sub-tag byte (byte 7), not the category byte (byte 6). The capability-12
+response's payload happens to start with `0xD0` (it's listing supported
+event tags: D0,D1,D2,D3,E0,E1,E2), which falsely matched the "D0 key ack"
+check and made the client loop back into the login sequence forever. Fixed
+by requiring both bytes to match; the corrected function signature is
+`is_ack_for(pkt, category, tag)`.
+
+### Live-testing gotcha: the device stops advertising unless externally powered
+
+After a stretch of testing, the dispenser stopped appearing in BLE scans
+entirely (from the Linux box's own adapter, which had successfully
+connected to it earlier the same day, so it is not a range or address
+problem). Pressing its physical buttons (`+`, `-`, `alarms`, `clock`) did
+not bring it back. The phone also showed it as disconnected, so nothing was
+holding the link. **A 3-minute continuous retry loop never saw a single
+advertisement**, so this is not a "short advertising window we kept
+missing" problem — the radio was genuinely off/asleep. **The next session
+found it advertising again with no explicit action recorded** — most
+plausibly it was plugged into power in between, which would confirm the
+"external power keeps the radio on" hypothesis from last session (its Tuya
+sibling product exposes an explicit "on external power" data point, so
+power-dependent BLE behaviour is plausible for this product line). Treat as
+likely-but-not-quite-confirmed until someone explicitly watches
+power-plug-in bring it back. Bottom line: **if the device isn't scanning,
+plug it in before troubleshooting anything else.**
+
+How the official app reconnects (relevant, from `PillboxScanner.java`): it
+**never rescans** for a known device. It stores `{name, mac}` JSON in
+SharedPreferences under `LB_PILLBOX_DEVICES`, rebuilds the handle with
+`getRemoteDevice(mac)`, and calls `BleManager.connect()` directly — Android
+then holds that connection request pending in the controller and latches on
+the instant the peripheral advertises. Scanning is only used when adding a
+*new* device (filtered on service `0xFF00` plus a name containing `"LN"`).
+`PillControlClient.wait_for_device()` approximates this with a retry loop,
+which is the right shape — it just can't help when the device is emitting
+nothing at all.
+
+Untested hypotheses for next session, in order of cheapness:
+1. **External power** — it may only keep the BLE radio awake when plugged in (its Tuya sibling exposes an explicit "on external power" data point, so power-dependent behaviour is plausible for this product line).
+2. **Power-
+
+Scanning tip: `BleakClient(address)` alone fails with
+`BleakDeviceNotFoundError` if BlueZ has never discovered the device in the
+current session — run a `BleakScanner.discover()` first (or use
+`BleakScanner.find_device_by_address`) so BlueZ has it cached.
+
+Also: run the client with `python3 -u`. Without unbuffered output, a run
+killed by `timeout` loses all its prints (stdout is block-buffered when
+piped), which looks exactly like "the script did nothing."
 
 ## Open questions
 
-- Exact GATT characteristic UUIDs (read/write/notify) under service `0000FF00-...`.
-- Full packet header/CRC format (only bytes 9-12 of the alarm-ack packet are known).
+- ~~Live confirmation of the read chain above~~ — **done, see "LIVE CONFIRMED" above.**
+- What battery `percent`/`state` actually mean (coarse level code vs. true percentage) — `percent=1` read live is suspiciously low to be a literal 0-100 value.
+- Whether external power really is what wakes the BLE radio (plausible from observation, not yet deliberately tested by watching a plug-in event).
 - Purpose of `kang_device_id`, `uid`, `access_token` fields on `ClockBean` — whether these are BLE pairing/bonding-level auth or just app bookkeeping.
-- Battery and pill-record (`TakeDrugBean`) byte layouts — not yet read in detail.
+- Pill-record (`TakeDrugBean`) byte layout — the dose-history records, not yet traced.
+- What the capability-query responses (categories 10-13) actually contain beyond the supported-tag list (category 11's response shape, in particular, wasn't decoded).
+- Second custom service `00010203-0405-0607-0809-0a0b0c0d1912` — never investigated.
+- No settings/alarm **write** has been attempted yet — only login/date-sync writes are live-confirmed. The write command shapes are mapped from source (categories 6 and 8) but unverified against the real device.

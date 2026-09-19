@@ -13,17 +13,42 @@ that's now the active line of work. Everything under "State as of
 user doesn't have. Don't delete it (may be useful later / for others), but
 don't treat it as this device's protocol.
 
-## MAJOR MILESTONE (2026-09-18) — working standalone client, logged in
+## MAJOR MILESTONE (2026-09-19) — full protocol reversed AND live-confirmed end to end
 
-Reverse-engineered the full BLE wire protocol from `pillcontrol`'s
-obfuscated packet layer (frame format, checksum, login handshake, CRC16-MAC
-key derivation) and **built and validated a standalone Python client
-(`src/pillcontrol_ble.py`) that logs into the real device with no phone or
-official app involved.** Confirmed working live twice. Full protocol
-writeup in `notes/pillcontrol-1.16-findings.md` under "Full login handshake
-— implemented and confirmed working standalone." This is the current
-frontier — next unknown is the exact request shape for reading
-alarms/settings (post-login, not yet captured).
+Reverse-engineered the **entire** `pillcontrol` BLE wire protocol from its
+obfuscated packet layer and built a standalone Python client
+(`src/pillcontrol_ble.py`) — no phone or official app involved. **Fully
+working, confirmed live, reproducibly (2 clean runs, identical data):**
+
+- **Login handshake.** Frame format, checksum, CRC16/MODBUS MAC-derived auth
+  keys, date-sync. Reaches "logged in" in ~1.4s.
+- **Full read chain.** Capability queries → settings → all 8 alarm slots →
+  battery. Real data read off the actual device:
+  `settings={'time_format':0,'alarm_ring':1,'alarm_voice':2,'alarm_duration':30}`,
+  all 8 alarms empty (`hour=24,minute=60` — that's the real "unconfigured"
+  sentinel, not `0xFF` as originally guessed from source alone),
+  `battery={'percent':1,'state':0}` (meaning of these two battery values
+  still unconfirmed — see notes).
+- **All write commands mapped too** (category `6` settings SET, category `8`
+  events) but **not yet tested live** — only login/date-sync writes are
+  confirmed; a settings/alarm write is the next real unknown.
+
+Full protocol table (categories, tags, offsets, the whole read sequence) is
+in `notes/pillcontrol-1.16-findings.md`, under "LIVE CONFIRMED" — that
+file is the source of truth, read it before touching the BLE code.
+
+**Hardware quirk, resolved:** the dispenser stops advertising after a
+testing stretch and needs external power to keep its BLE radio on (button
+presses don't wake it; a `wait_for_device()` retry loop in the client
+mimics the official app's reconnect-by-MAC behaviour, but can't help if the
+radio is genuinely off). If the device isn't showing up in a scan,
+**plug it in first** before troubleshooting anything else.
+
+**A dispatch bug was found and fixed** during the live run: `is_ack_for()`
+originally matched on the sub-tag byte alone, which could coincidentally
+match unrelated response data and made the client loop the login sequence
+forever. Fixed by also checking the category byte. Worth knowing if similar
+symmetric-looking bugs show up when adding write support.
 
 ## State as of 2026-09-15
 
@@ -51,4 +76,4 @@ alarms/settings (post-login, not yet captured).
 
 ## Best next move
 
-`src/pillcontrol_ble.py` logs into the real device standalone (confirmed working). Next: extend it to read alarms/settings post-login — try the `{0,0,10}`/`{0,0,11}`/`{0,0,12}` capability-list queries first (that's what the official app does right after login, per `a/g.java`'s chain), then work out the actual alarm-list/params-read request shape. Keep experiments read-only until the request/response shapes for settings *writes* are independently understood — device is still unloaded (safe), but no need to guess at writes when reads haven't been mapped yet. `src/dosecontrol.py` (Tuya-flavored scaffold) remains stale/irrelevant to this device — don't extend it.
+Reads are fully done and live-confirmed (login, settings, all alarms, battery). The next real unknown is a **settings write** — e.g. toggle time format or set one alarm slot, using the category-`6`/`8` write shapes already mapped from source in `notes/pillcontrol-1.16-findings.md` but never tested against real hardware. Device is still unloaded (no medication) so this is within the safety guardrails, but treat writes as a new category of risk vs. reads: change one thing at a time, verify by reading it back afterward, and stay away from anything alarm-schedule-adjacent until a simple write (like time format) is proven safe and reversible. Remember the device needs **external power** to keep its BLE radio on — plug it in before doing anything. `src/dosecontrol.py` (Tuya-flavored scaffold) remains stale/irrelevant to this device — don't extend it.
